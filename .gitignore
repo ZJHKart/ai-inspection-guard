@@ -1,0 +1,6 @@
+.tmp-test/
+.playwright-cli/
+shot-*.png
+*.tgz
+package/
+.DS_Store

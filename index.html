@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>智能巡检 · 区域入侵检测 | AI Inspection Guard</title>
+<meta name="description" content="基于 EfficientDet-Lite0 的浏览器端目标检测与虚拟警戒区入侵判定系统，纯前端离线推理。">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <svg class="mark" viewBox="0 0 36 36" aria-hidden="true">
+      <rect x="1" y="1" width="34" height="34" rx="3" fill="none" stroke="currentColor" stroke-width="1" opacity=".35"/>
+      <path d="M7 14V7h7" fill="none" stroke="currentColor" stroke-width="2"/>
+      <path d="M29 22v7h-7" fill="none" stroke="currentColor" stroke-width="2"/>
+      <circle cx="18" cy="18" r="4.2" fill="none" stroke="currentColor" stroke-width="1.8"/>
+      <circle cx="18" cy="18" r="1.4" fill="currentColor"/>
+    </svg>
+    <div class="brand-text">
+      <h1>智能巡检 · 区域入侵检测</h1>
+      <p>AI INSPECTION GUARD<span class="slash">/</span>VIRTUAL FENCE UNIT</p>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <span class="chip" id="modelChip"><i class="dot dot-wait"></i><span id="modelChipText">模型加载中</span></span>
+    <span class="chip mono" id="engineChip">EfficientDet-Lite0 · INT8</span>
+  </div>
+</header>
+
+<main class="workspace">
+
+  <aside class="panel panel-left">
+    <section class="block">
+      <div class="block-head"><span class="idx">01</span><h2>图像输入</h2></div>
+      <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="上传巡检图像">
+        <svg viewBox="0 0 24 24" aria-hidden="true" class="dz-icon"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M4 15v3.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <p class="dz-main">拖入图像 / 点击选择</p>
+        <p class="dz-sub">支持 JPG · PNG · WEBP，单张不超过 12 MB</p>
+        <input type="file" id="fileInput" accept="image/*" hidden>
+      </div>
+      <div class="sample-head"><span>示例场景</span><span class="mono muted" id="sampleHint">点击载入</span></div>
+      <div class="samples" id="samples"></div>
+    </section>
+
+    <section class="block">
+      <div class="block-head"><span class="idx">02</span><h2>检测参数</h2></div>
+
+      <div class="field">
+        <div class="field-row">
+          <label for="threshold">置信度阈值</label>
+          <output class="mono" id="thresholdOut">0.40</output>
+        </div>
+        <input type="range" id="threshold" min="0.10" max="0.90" step="0.05" value="0.40">
+        <p class="hint">阈值越低召回越多、误报越多；调整后即时重算，无需重新推理。</p>
+      </div>
+
+      <div class="field">
+        <div class="field-row"><label>关注类别</label><span class="mono muted" id="classCount">4 类</span></div>
+        <div class="chips" id="classChips"></div>
+      </div>
+
+      <div class="field">
+        <div class="field-row"><label for="verdictMode">入侵判定方式</label></div>
+        <select id="verdictMode">
+          <option value="ground" selected>落地点落入警戒区（推荐）</option>
+          <option value="center">目标中心点落入警戒区</option>
+          <option value="overlap">目标框重叠面积占比 ≥ 15%</option>
+        </select>
+        <p class="hint">落地点＝目标框底边中点，等价于判断"人站在哪里"，可避免远处目标的框误触。</p>
+      </div>
+    </section>
+
+    <section class="block block-flat">
+      <div class="block-head"><span class="idx">03</span><h2>作业信息</h2></div>
+      <dl class="meta">
+        <dt>课程</dt><dd>人工智能基础与应用</dd>
+        <dt>模型</dt><dd>EfficientDet-Lite0（COCO 80 类）</dd>
+        <dt>推理</dt><dd>MediaPipe Tasks · WASM · CPU</dd>
+        <dt>数据</dt><dd>全部在本地浏览器内处理</dd>
+      </dl>
+    </section>
+  </aside>
+
+  <section class="stage-col">
+    <div class="stage-toolbar">
+      <div class="tool-group">
+        <button class="btn" id="btnAnalyze" disabled>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5 6.2 12 13 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          立即分析
+        </button>
+        <button class="btn btn-ghost" id="btnEditZone" disabled>编辑警戒区</button>
+        <button class="btn btn-ghost" id="btnResetZone" disabled>重置区域</button>
+      </div>
+      <div class="tool-group right">
+        <span class="stage-note" id="zoneNote">警戒区 A · 未设置</span>
+        <button class="btn btn-ghost" id="btnExport" disabled>导出日志 CSV</button>
+      </div>
+    </div>
+
+    <div class="stage-wrap" id="stageWrap">
+      <canvas id="canvas" width="1280" height="720"></canvas>
+      <div class="empty" id="emptyState">
+        <div class="empty-frame">
+          <span class="tick tl"></span><span class="tick tr"></span><span class="tick bl"></span><span class="tick br"></span>
+          <p class="empty-title">等待输入巡检画面</p>
+          <p class="empty-desc">载入示例场景或拖入一张监控截图，系统将自动标出人员与车辆，并判定是否越过警戒区。</p>
+          <p class="empty-mono mono">NO SIGNAL / 1280 × 720</p>
+        </div>
+      </div>
+      <div class="scanline" id="scanline" hidden></div>
+    </div>
+
+    <div class="statusline">
+      <span id="statusText">系统就绪 · 等待图像</span>
+      <span class="mono" id="statusMeta">—</span>
+    </div>
+  </section>
+
+  <aside class="panel panel-right">
+    <section class="block block-stats">
+      <div class="block-head"><span class="idx">04</span><h2>本次检测</h2></div>
+      <div class="stats">
+        <div class="stat"><span class="stat-label">检出目标</span><b class="mono" id="statTotal">0</b></div>
+        <div class="stat"><span class="stat-label">入侵目标</span><b class="mono alarm" id="statIntrude">0</b></div>
+        <div class="stat"><span class="stat-label">越界占比</span><b class="mono" id="statRate">—</b></div>
+        <div class="stat"><span class="stat-label">推理耗时</span><b class="mono" id="statCost">—</b></div>
+      </div>
+    </section>
+
+    <section class="block grow">
+      <div class="block-head"><span class="idx">05</span><h2>报警记录</h2><span class="badge" id="alarmBadge">0</span></div>
+      <div class="log" id="logList"><p class="log-empty">尚无报警。载入图像并执行分析后，越界目标将在此登记。</p></div>
+    </section>
+
+    <section class="block block-sys">
+      <div class="block-head"><span class="idx">06</span><h2>系统状态</h2></div>
+      <ul class="syslist">
+        <li><span>推理引擎</span><b id="sysEngine" class="mono">初始化…</b></li>
+        <li><span>输入分辨率</span><b id="sysRes" class="mono">—</b></li>
+        <li><span>分析批次</span><b id="sysBatch" class="mono">0</b></li>
+        <li><span>运行模式</span><b class="mono ok">本地 / 离线</b></li>
+      </ul>
+    </section>
+  </aside>
+</main>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script type="module" src="assets/js/main.js"></script>
+</body>
+</html>
