@@ -20,7 +20,7 @@ export function render(ctx, canvas, { frame, dets, verdicts, zone, editing, hasA
   if (frame) ctx.drawImage(frame, 0, 0, W, H);
 
   const zonePx = zone ? zoneToPx(zone, W, H) : null;
-  if (zonePx) drawZone(ctx, zonePx, s, hasAlarm, editing);
+  if (zonePx) drawZone(ctx, zonePx, s, hasAlarm, editing, H);
 
   (dets || []).forEach((det, i) => {
     const v = verdicts[i];
@@ -30,7 +30,7 @@ export function render(ctx, canvas, { frame, dets, verdicts, zone, editing, hasA
   if (zonePx && editing) drawHandles(ctx, zonePx, s);
 }
 
-function drawZone(ctx, z, s, alarm, editing) {
+function drawZone(ctx, z, s, alarm, editing, H) {
   ctx.save();
   ctx.fillStyle = alarm ? 'rgba(255, 93, 71, .10)' : 'rgba(76, 194, 255, .07)';
   ctx.fillRect(z.x, z.y, z.w, z.h);
@@ -66,7 +66,9 @@ function drawZone(ctx, z, s, alarm, editing) {
   const tw = ctx.measureText(text).width;
   const padX = 7 * s;
   const plateH = 20 * s;
-  const py = z.y - plateH - 5 * s < 2 ? z.y + 4 * s : z.y - plateH - 5 * s;
+  // 默认放在区域下沿外侧，避开检测框标签；贴底时回退到区域内部
+  let py = z.y + z.h + 5 * s;
+  if (py + plateH > H - 2) py = z.y + z.h - plateH - 6 * s;
   ctx.fillStyle = alarm ? C.alarm : C.accent;
   ctx.fillRect(z.x, py, tw + padX * 2, plateH);
   ctx.fillStyle = C.ink;

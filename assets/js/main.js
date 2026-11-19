@@ -166,6 +166,7 @@ async function loadImage(src, name) {
     $('sysRes').textContent = `${frame.width} × ${frame.height}`;
     $('statusMeta').textContent = `${frame.width}×${frame.height} · 待分析`;
     $('statusText').textContent = name ? `已载入场景：${name}` : '已载入图像';
+    $('zoneNote').textContent = '警戒区 A · 已启用';
 
     // 首次载入自动分析，减少演示时的操作步骤
     await analyze();
@@ -203,9 +204,10 @@ async function analyze() {
   applyFilters();
   setBusyUI(false);
   $('sysBatch').textContent = String(state.batch);
-  $('statusText').textContent = dets.length
-    ? `分析完成 · 检出 ${dets.length} 个候选目标`
-    : '分析完成 · 未检出目标';
+  const kept = state.rawDets.filter((d) => d.score >= state.threshold && isAllowed(d.label)).length;
+  $('statusText').textContent = kept
+    ? `分析完成 · 关注目标 ${kept} 个（候选 ${dets.length}）`
+    : '分析完成 · 未检出关注目标';
   $('statusMeta').textContent = `推理 ${Math.round(state.cost)} ms · 批次 #${state.batch}`;
 }
 
