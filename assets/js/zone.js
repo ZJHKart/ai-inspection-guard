@@ -3,7 +3,7 @@
  * 警戒区以归一化坐标保存（0~1），与画布分辨率解耦。
  */
 
-export const DEFAULT_ZONE = { x: 0.44, y: 0.14, w: 0.32, h: 0.76 };
+export const DEFAULT_ZONE = { x: 0.33, y: 0.16, w: 0.30, h: 0.78 };
 
 export function zoneToPx(zone, W, H) {
   return { x: zone.x * W, y: zone.y * H, w: zone.w * W, h: zone.h * H };
