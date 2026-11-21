@@ -1,5 +1,5 @@
 /**
- * main.js — 应用编排：图像载入、推理调度、参数联动、日志与导出
+ * main.js — 应用编排：图像载入、推理调度、参数联动、批量检测、历史与导出
  */
 import { Detector } from './detector.js';
 import { ZoneEditor, DEFAULT_ZONE, evaluateDetection, zoneToPx } from './zone.js';
@@ -29,12 +29,17 @@ const SAMPLES = [
   }
 ];
 
+const HISTORY_KEY = 'aig.history.v1';
+const HISTORY_LIMIT = 200;
+const MAX_SIDE = 1280;
+
 const state = {
   detector: new Detector(),
   ready: null,
   frame: null,
+  fileName: '',
   rawDets: [],
-  threshold: 0.40,
+  threshold: 0.30,
   classes: new Set(['person', 'car', 'truck', 'bus']),
   otherOn: false,
   mode: 'ground',
@@ -44,7 +49,10 @@ const state = {
   cost: 0,
   stamp: '',
   busy: false,
-  logs: []
+  logs: [],
+  history: [],
+  results: [],
+  batchRunning: false
 };
 
 const canvas = $('canvas');
@@ -64,8 +72,12 @@ function toast(msg, ms = 2600) {
 }
 
 function nowStamp() {
+  return new Date().toLocaleTimeString('zh-CN', { hour12: false });
+}
+
+function todayTag() {
   const d = new Date();
-  return d.toLocaleTimeString('zh-CN', { hour12: false });
+  return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
 }
 
 function isAllowed(label) {
@@ -73,11 +85,134 @@ function isAllowed(label) {
   return state.otherOn && !KEY_CLASSES.includes(label);
 }
 
+function downloadCsv(name, head, rows) {
+  const csv = '\uFEFF' + [head, ...rows]
+    .map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(','))
+    .join('\r\n');
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 3000);
+}
+
+/* ---------------- 历史批次（localStorage） ---------------- */
+
+function loadHistory() {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    state.history = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(state.history)) state.history = [];
+  } catch {
+    state.history = [];
+  }
+}
+
+function saveHistory() {
+  try {
+    if (state.history.length > HISTORY_LIMIT) {
+      state.history = state.history.slice(0, HISTORY_LIMIT);
+    }
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(state.history));
+  } catch {
+    /* 存储被禁用时静默降级，不影响主流程 */
+  }
+}
+
+function addHistory(entry) {
+  state.history.unshift(entry);
+  saveHistory();
+  renderHistory();
+}
+
+function renderHistory() {
+  const box = $('historyList');
+  if (!box) return;
+  if (!state.history.length) {
+    box.innerHTML = '<p class="log-empty">还没有历史批次。每次分析或批量检测都会在这里留档，刷新页面不会丢失。</p>';
+    return;
+  }
+  box.innerHTML = state.history
+    .slice(0, 30)
+    .map(
+      (h) => `
+    <div class="hist-item">
+      <span class="hist-name" title="${h.name || '未命名'}">${h.name || '未命名'}</span>
+      <span class="hist-num mono">${h.intrude}/${h.total}</span>
+      <span class="hist-time mono">${h.time}</span>
+    </div>`
+    )
+    .join('');
+}
+
+function clearHistory() {
+  if (!state.history.length) return;
+  state.history = [];
+  saveHistory();
+  renderHistory();
+  toast('历史记录已清空');
+}
+
+function exportHistory() {
+  if (!state.history.length) return;
+  const head = ['时间', '来源', '模式', '文件名', '关注目标', '越界目标', '耗时(ms)'];
+  const rows = state.history.map((h) => [
+    h.time, h.source || '图像', h.mode === 'batch' ? '批量' : '单张',
+    h.name || '', h.total, h.intrude, h.cost ? Math.round(h.cost) : ''
+  ]);
+  downloadCsv(`巡检历史批次_${todayTag()}.csv`, head, rows);
+  toast('已导出全部历史批次');
+}
+
+/* ---------------- 图像与渲染 ---------------- */
+
+async function buildFrame(src) {
+  const img = await new Promise((res, rej) => {
+    const i = new Image();
+    i.onload = () => res(i);
+    i.onerror = () => rej(new Error('图像解码失败'));
+    i.src = src;
+  });
+  const scale = Math.min(1, MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
+  const frame = document.createElement('canvas');
+  frame.width = Math.round(img.naturalWidth * scale);
+  frame.height = Math.round(img.naturalHeight * scale);
+  frame.getContext('2d').drawImage(img, 0, 0, frame.width, frame.height);
+  return frame;
+}
+
+/** 按当前阈值/类别过滤，并计算每个目标的越界判定 */
+function evaluate(frame, rawDets) {
+  const dets = rawDets.filter((d) => d.score >= state.threshold && isAllowed(d.label));
+  const zonePx = zoneToPx(state.zone, frame.width, frame.height);
+  const verdicts = dets.map((d) => evaluateDetection(d, zonePx, state.mode));
+  const alarms = [];
+  dets.forEach((d, i) => {
+    if (verdicts[i].intruded) alarms.push({ det: d, v: verdicts[i] });
+  });
+  alarms.sort((a, b) => b.det.score - a.det.score);
+  return { dets, verdicts, alarms };
+}
+
+function paint(frame, dets, verdicts, hasAlarm, editing) {
+  canvas.width = frame.width;
+  canvas.height = frame.height;
+  render(ctx, canvas, {
+    frame,
+    dets,
+    verdicts,
+    zone: state.zone,
+    editing,
+    hasAlarm
+  });
+}
+
 /* ---------------- 初始化 ---------------- */
 
 function buildSamples() {
   const box = $('samples');
-  SAMPLES.forEach((s, i) => {
+  SAMPLES.forEach((s) => {
     const btn = document.createElement('button');
     btn.className = 'sample';
     btn.type = 'button';
@@ -134,30 +269,17 @@ function setBusyUI(busy) {
   scanline.hidden = !busy;
   $('btnAnalyze').disabled = busy || !state.frame;
   $('btnAnalyze').textContent = busy ? '分析中…' : '立即分析';
+  $('btnBatch').disabled = busy || !state.detector.model;
   if (busy) $('statusText').textContent = '正在推理 · EfficientDet-Lite0 …';
 }
 
-/* ---------------- 图像载入 ---------------- */
+/* ---------------- 单图流程 ---------------- */
 
 async function loadImage(src, name) {
   try {
-    const img = await new Promise((res, rej) => {
-      const i = new Image();
-      i.onload = () => res(i);
-      i.onerror = () => rej(new Error('图像解码失败'));
-      i.src = src;
-    });
-
-    const MAX_W = 1280;
-    const scale = Math.min(1, MAX_W / img.naturalWidth);
-    const frame = document.createElement('canvas');
-    frame.width = Math.round(img.naturalWidth * scale);
-    frame.height = Math.round(img.naturalHeight * scale);
-    frame.getContext('2d').drawImage(img, 0, 0, frame.width, frame.height);
-
+    const frame = await buildFrame(src);
     state.frame = frame;
-    canvas.width = frame.width;
-    canvas.height = frame.height;
+    state.fileName = name || '本地图像';
 
     emptyState.hidden = true;
     $('btnEditZone').disabled = false;
@@ -168,14 +290,11 @@ async function loadImage(src, name) {
     $('statusText').textContent = name ? `已载入场景：${name}` : '已载入图像';
     $('zoneNote').textContent = '警戒区 A · 已启用';
 
-    // 首次载入自动分析，减少演示时的操作步骤
     await analyze();
   } catch (err) {
     toast(err.message || '图像载入失败');
   }
 }
-
-/* ---------------- 推理与判定 ---------------- */
 
 async function analyze() {
   if (!state.frame || state.busy) return;
@@ -186,70 +305,60 @@ async function analyze() {
   setBusyUI(true);
   await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 60)));
 
-  let dets = [];
+  let rawDets = [];
   const t0 = performance.now();
   try {
-    dets = await state.detector.detect(state.frame);
+    rawDets = await state.detector.detect(state.frame);
   } catch (err) {
     setBusyUI(false);
     toast('推理失败：' + (err.message || err));
     return;
   }
   state.cost = performance.now() - t0;
-  state.rawDets = dets;
+  state.rawDets = rawDets;
   state.batch += 1;
   state.stamp = nowStamp();
-  state.editorStamp = state.stamp;
 
   applyFilters();
   setBusyUI(false);
   $('sysBatch').textContent = String(state.batch);
-  const kept = state.rawDets.filter((d) => d.score >= state.threshold && isAllowed(d.label)).length;
-  $('statusText').textContent = kept
-    ? `分析完成 · 关注目标 ${kept} 个（候选 ${dets.length}）`
+
+  const { dets, alarms } = evaluate(state.frame, rawDets);
+  $('statusText').textContent = dets.length
+    ? `分析完成 · 关注目标 ${dets.length} 个（候选 ${rawDets.length}）`
     : '分析完成 · 未检出关注目标';
   $('statusMeta').textContent = `推理 ${Math.round(state.cost)} ms · 批次 #${state.batch}`;
+
+  addHistory({
+    time: state.stamp,
+    name: state.fileName,
+    source: '图像',
+    mode: 'single',
+    total: dets.length,
+    intrude: alarms.length,
+    cost: state.cost,
+    batch: state.batch
+  });
 }
 
 function applyFilters() {
   if (!state.frame) return;
 
-  const dets = state.rawDets.filter(
-    (d) => d.score >= state.threshold && isAllowed(d.label)
-  );
-  const zonePx = zoneToPx(state.zone, canvas.width, canvas.height);
-  const verdicts = dets.map((d) => evaluateDetection(d, zonePx, state.mode));
-  const alarms = [];
-  dets.forEach((d, i) => {
-    if (verdicts[i].intruded) alarms.push({ det: d, v: verdicts[i] });
-  });
-  alarms.sort((a, b) => b.det.score - a.det.score);
+  const { dets, verdicts, alarms } = evaluate(state.frame, state.rawDets);
+  paint(state.frame, dets, verdicts, alarms.length > 0, state.editing);
 
-  render(ctx, canvas, {
-    frame: state.frame,
-    dets,
-    verdicts,
-    zone: state.zone,
-    editing: state.editing,
-    hasAlarm: alarms.length > 0
-  });
-
-  // 统计
   $('statTotal').textContent = String(dets.length);
   $('statIntrude').textContent = String(alarms.length);
-  $('statRate').textContent = dets.length
-    ? `${Math.round((alarms.length / dets.length) * 100)}%`
-    : '—';
+  $('statRate').textContent = dets.length ? `${Math.round((alarms.length / dets.length) * 100)}%` : '—';
   $('statCost').textContent = state.cost ? `${Math.round(state.cost)} ms` : '—';
   $('alarmBadge').textContent = String(alarms.length);
 
-  // 日志
   state.logs = alarms.map((a) => ({
     cls: a.det.label,
     score: a.det.score,
     x: Math.round(a.v.ground.x),
     y: Math.round(a.v.ground.y),
-    stamp: state.editorStamp || state.stamp,
+    stamp: state.stamp,
     batch: state.batch
   }));
   renderLog();
@@ -281,7 +390,143 @@ function renderLog() {
     .join('');
 }
 
-/* ---------------- 导出 ---------------- */
+/* ---------------- 批量检测 ---------------- */
+
+async function runBatch(files) {
+  if (state.batchRunning || !state.detector.model) return;
+  const list = Array.from(files).filter((f) => f.type.startsWith('image/'));
+  if (!list.length) {
+    toast('请选择图片文件');
+    return;
+  }
+
+  state.batchRunning = true;
+  state.results = [];
+  $('btnBatch').disabled = true;
+  $('btnAnalyze').disabled = true;
+  $('batchPanel').hidden = false;
+  $('batchBody').innerHTML = '<p class="log-empty">正在处理…</p>';
+  $('batchSummary').textContent = `0 / ${list.length}`;
+
+  for (let i = 0; i < list.length; i += 1) {
+    const file = list[i];
+    $('batchSummary').textContent = `${i + 1} / ${list.length} · ${file.name}`;
+    $('statusText').textContent = `批量检测 ${i + 1}/${list.length}：${file.name}`;
+    const url = URL.createObjectURL(file);
+    try {
+      const frame = await buildFrame(url);
+      const t0 = performance.now();
+      const rawDets = await state.detector.detect(frame);
+      const cost = performance.now() - t0;
+      const { dets, verdicts, alarms } = evaluate(frame, rawDets);
+
+      state.results.push({
+        name: file.name,
+        ok: true,
+        total: dets.length,
+        intrude: alarms.length,
+        cost,
+        dets: dets.map((d, k) => ({
+          label: d.label,
+          score: +d.score.toFixed(2),
+          intruded: verdicts[k].intruded
+        }))
+      });
+
+      // 画布跟随当前处理的图像，便于查看进度
+      state.frame = frame;
+      state.fileName = file.name;
+      paint(frame, dets, verdicts, alarms.length > 0, false);
+      emptyState.hidden = true;
+      $('sysRes').textContent = `${frame.width} × ${frame.height}`;
+      $('statTotal').textContent = String(dets.length);
+      $('statIntrude').textContent = String(alarms.length);
+      $('statRate').textContent = dets.length ? `${Math.round((alarms.length / dets.length) * 100)}%` : '—';
+      $('statCost').textContent = `${Math.round(cost)} ms`;
+      $('alarmBadge').textContent = String(alarms.length);
+      state.logs = alarms.map((a) => ({
+        cls: a.det.label,
+        score: a.det.score,
+        x: Math.round(a.v.ground.x),
+        y: Math.round(a.v.ground.y),
+        stamp: nowStamp(),
+        batch: state.batch
+      }));
+      renderLog();
+      renderBatchTable();
+    } catch (err) {
+      state.results.push({ name: file.name, ok: false, error: String(err.message || err) });
+      renderBatchTable();
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  const ok = state.results.filter((r) => r.ok);
+  const totalObj = ok.reduce((s, r) => s + r.total, 0);
+  const totalAlarm = ok.reduce((s, r) => s + r.intrude, 0);
+  const avg = ok.length ? ok.reduce((s, r) => s + r.cost, 0) / ok.length : 0;
+
+  state.batch += 1;
+  $('batchSummary').textContent =
+    `${list.length} 张 · 目标 ${totalObj} · 越界 ${totalAlarm} · 平均 ${Math.round(avg)} ms`;
+  $('statusText').textContent = `批量检测完成 · ${list.length} 张图，${totalAlarm} 个越界目标`;
+  $('statusMeta').textContent = `平均 ${Math.round(avg)} ms/张 · 批次 #${state.batch}`;
+  $('sysBatch').textContent = String(state.batch);
+  $('btnBatch').disabled = false;
+  $('btnAnalyze').disabled = false;
+  state.batchRunning = false;
+
+  addHistory({
+    time: nowStamp(),
+    name: `批量 ${list.length} 张`,
+    source: '批量',
+    mode: 'batch',
+    total: totalObj,
+    intrude: totalAlarm,
+    cost: avg,
+    batch: state.batch
+  });
+}
+
+function renderBatchTable() {
+  const box = $('batchBody');
+  const rows = state.results
+    .map(
+      (r, i) => `
+    <tr>
+      <td class="mono">${i + 1}</td>
+      <td class="batch-name" title="${r.name}">${r.name}</td>
+      <td class="mono">${r.ok ? r.total : '—'}</td>
+      <td class="mono ${r.ok && r.intrude ? 'alarm' : ''}">${r.ok ? r.intrude : '—'}</td>
+      <td class="mono">${r.ok ? Math.round(r.cost) + ' ms' : '解码失败'}</td>
+      <td class="batch-dets">${r.ok ? r.dets.map((d) => `${zhName(d.label)}${d.intruded ? '!' : ''}`).join(' ') : ''}</td>
+    </tr>`
+    )
+    .join('');
+  box.innerHTML = `
+    <table class="batch-table">
+      <thead><tr><th>#</th><th>文件</th><th>目标</th><th>越界</th><th>耗时</th><th>明细（! = 越界）</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+function exportBatch() {
+  const ok = state.results.filter((r) => r.ok);
+  if (!ok.length) return;
+  const head = ['文件名', '关注目标', '越界目标', '耗时(ms)', '检出明细'];
+  const rows = state.results.map((r) => [
+    r.name,
+    r.ok ? r.total : '',
+    r.ok ? r.intrude : '',
+    r.ok ? Math.round(r.cost) : '',
+    r.ok ? r.dets.map((d) => `${zhName(d.label)}(${d.score}${d.intruded ? ',越界' : ''})`).join(' | ') : '解码失败'
+  ]);
+  downloadCsv(`批量检测结果_${todayTag()}.csv`, head, rows);
+  toast('已导出批量检测结果');
+}
+
+/* ---------------- 导出（单批次） ---------------- */
 
 function exportCsv() {
   if (!state.logs.length) return;
@@ -289,18 +534,7 @@ function exportCsv() {
   const rows = state.logs.map((l, i) => [
     l.batch, l.stamp, i + 1, zhName(l.cls), l.cls, l.score.toFixed(3), l.x, l.y, '入侵'
   ]);
-  const csv = '\uFEFF' + [head, ...rows]
-    .map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(','))
-    .join('\r\n');
-
-  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
-  const a = document.createElement('a');
-  const d = new Date();
-  const ts = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}_${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`;
-  a.href = url;
-  a.download = `巡检报警日志_批次${state.batch}_${ts}.csv`;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 3000);
+  downloadCsv(`巡检报警日志_批次${state.batch}_${todayTag()}.csv`, head, rows);
   toast('已导出当前批次的报警日志');
 }
 
@@ -320,6 +554,16 @@ function bindUI() {
     e.target.value = '';
   });
 
+  $('btnBatch').addEventListener('click', () => $('batchInput').click());
+  $('batchInput').addEventListener('change', (e) => {
+    if (e.target.files && e.target.files.length) runBatch(e.target.files);
+    e.target.value = '';
+  });
+  $('btnBatchClose').addEventListener('click', () => {
+    $('batchPanel').hidden = true;
+  });
+  $('btnBatchCsv').addEventListener('click', exportBatch);
+
   const dz = $('dropzone');
   ['dragenter', 'dragover'].forEach((ev) =>
     dz.addEventListener(ev, (e) => {
@@ -334,12 +578,13 @@ function bindUI() {
     })
   );
   dz.addEventListener('drop', (e) => {
-    const f = e.dataTransfer.files && e.dataTransfer.files[0];
-    if (f && f.type.startsWith('image/')) readFile(f);
+    const fs = e.dataTransfer.files;
+    if (!fs || !fs.length) return;
+    if (fs.length > 1) runBatch(fs);
+    else if (fs[0].type.startsWith('image/')) readFile(fs[0]);
     else toast('请拖入图片文件');
   });
 
-  // 舞台同样接受拖放
   const wrap = $('stageWrap');
   ['dragenter', 'dragover'].forEach((ev) =>
     wrap.addEventListener(ev, (e) => {
@@ -351,11 +596,12 @@ function bindUI() {
   wrap.addEventListener('drop', (e) => {
     e.preventDefault();
     wrap.classList.remove('drag');
-    const f = e.dataTransfer.files && e.dataTransfer.files[0];
-    if (f && f.type.startsWith('image/')) readFile(f);
+    const fs = e.dataTransfer.files;
+    if (!fs || !fs.length) return;
+    if (fs.length > 1) runBatch(fs);
+    else if (fs[0].type.startsWith('image/')) readFile(fs[0]);
   });
 
-  // 粘贴板
   window.addEventListener('paste', (e) => {
     const items = e.clipboardData && e.clipboardData.items;
     if (!items) return;
@@ -380,6 +626,9 @@ function bindUI() {
 
   $('btnAnalyze').addEventListener('click', analyze);
   $('btnExport').addEventListener('click', exportCsv);
+  $('btnClearHistory').addEventListener('click', clearHistory);
+  $('btnExportHistory').addEventListener('click', exportHistory);
+  $('btnRetry').addEventListener('click', () => initModel(true));
   $('btnResetZone').addEventListener('click', () => {
     editor.setZone(DEFAULT_ZONE);
     toast('警戒区已重置为默认范围');
@@ -404,15 +653,49 @@ function readFile(file) {
   }
   document.querySelectorAll('.sample').forEach((n) => n.classList.remove('active'));
   const url = URL.createObjectURL(file);
-  loadImage(url, '本地图像').finally(() => setTimeout(() => URL.revokeObjectURL(url), 2000));
+  loadImage(url, file.name).finally(() => setTimeout(() => URL.revokeObjectURL(url), 2000));
 }
 
 /* ---------------- 启动 ---------------- */
+
+async function initModel(isRetry = false) {
+  const chip = $('modelChip');
+  const chipText = $('modelChipText');
+  const dot = chip.querySelector('.dot');
+  $('btnRetry').hidden = true;
+  dot.className = 'dot dot-wait';
+  chipText.textContent = isRetry ? '重新加载…' : '模型加载中';
+
+  try {
+    if (isRetry) {
+      state.detector = new Detector();
+    }
+    state.ready = state.detector.init((msg) => {
+      chipText.textContent = msg;
+    });
+    const info = await state.ready;
+    dot.className = 'dot dot-ok';
+    chipText.textContent = '模型就绪';
+    $('sysEngine').textContent = info.model;
+    $('engineChip').textContent = 'EfficientDet-Lite0 · INT8 · WASM';
+    $('statusText').textContent = '系统就绪 · 等待图像';
+    $('btnBatch').disabled = false;
+  } catch (err) {
+    dot.className = 'dot dot-err';
+    chipText.textContent = '模型加载失败';
+    $('sysEngine').textContent = '加载失败';
+    $('btnRetry').hidden = false;
+    toast('模型加载失败，可点“重新加载模型”重试', 5000);
+    console.error(err);
+  }
+}
 
 async function boot() {
   buildSamples();
   buildChips();
   bindUI();
+  loadHistory();
+  renderHistory();
 
   editor = new ZoneEditor(canvas, (z) => {
     state.zone = z;
@@ -431,27 +714,7 @@ async function boot() {
     return;
   }
 
-  const chip = $('modelChip');
-  const chipText = $('modelChipText');
-  const dot = chip.querySelector('.dot');
-
-  try {
-    state.ready = state.detector.init((msg) => {
-      chipText.textContent = msg;
-    });
-    const info = await state.ready;
-    dot.className = 'dot dot-ok';
-    chipText.textContent = '模型就绪';
-    $('sysEngine').textContent = info.model;
-    $('engineChip').textContent = 'EfficientDet-Lite0 · INT8 · WASM';
-    $('statusText').textContent = '系统就绪 · 等待图像';
-  } catch (err) {
-    dot.className = 'dot dot-err';
-    chipText.textContent = '模型加载失败';
-    $('sysEngine').textContent = '加载失败';
-    toast('模型加载失败，请检查 vendor 目录或网络策略', 5000);
-    console.error(err);
-  }
+  await initModel();
 }
 
 boot();

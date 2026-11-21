@@ -371,6 +371,7 @@ canvas.editing { cursor: crosshair; }
 }
 .empty-frame {
   position: relative;
+  pointer-events: auto;
   width: min(440px, 90%);
   padding: 26px 28px 22px;
   border: 1px solid #1d242e;
@@ -468,6 +469,102 @@ canvas.editing { cursor: crosshair; }
   z-index: 20;
 }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+
+/* ---------- 历史批次 ---------- */
+.head-actions { margin-left: auto; display: flex; gap: 4px; }
+.mini {
+  font: inherit;
+  font-size: 10px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 2px 7px;
+  cursor: pointer;
+  transition: color .14s, border-color .14s;
+}
+.mini:hover { color: var(--accent); border-color: rgba(76, 194, 255, .45); }
+
+.block-hist { flex: none; }
+.history {
+  max-height: 150px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.history::-webkit-scrollbar { width: 5px; }
+.history::-webkit-scrollbar-thumb { background: #2a333f; }
+.hist-item {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 8px;
+  align-items: baseline;
+  padding: 4px 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--line-soft);
+  border-radius: 1px;
+  font-size: 10.5px;
+}
+.hist-name {
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hist-num { color: var(--alarm); font-size: 10px; }
+.hist-time { color: var(--muted); font-size: 9.5px; }
+
+/* ---------- 批量检测面板 ---------- */
+.batch-panel {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  right: 16px;
+  max-height: calc(100% - 32px);
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  background: #0b0e13;
+  border: 1px solid var(--line);
+  box-shadow: 0 24px 60px -30px #000;
+}
+.batch-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.batch-title { font-size: 12px; font-weight: 600; letter-spacing: .08em; }
+.batch-summary { font-size: 10.5px; color: var(--muted); }
+.batch-actions { margin-left: auto; display: flex; gap: 6px; }
+.batch-body { overflow: auto; max-height: 58vh; padding: 10px 14px 16px; }
+.batch-body::-webkit-scrollbar { width: 6px; }
+.batch-body::-webkit-scrollbar-thumb { background: #2a333f; }
+
+.batch-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.batch-table th {
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  text-align: left;
+  font-weight: 500;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+  padding: 6px 8px;
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+.batch-table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--text-2);
+  vertical-align: top;
+}
+.batch-name { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.batch-dets { color: var(--muted); font-size: 10px; }
 
 /* ---------- 响应式 ---------- */
 @media (max-width: 1180px) {

@@ -40,6 +40,7 @@
         <p class="dz-main">拖入图像 / 点击选择</p>
         <p class="dz-sub">支持 JPG · PNG · WEBP，单张不超过 12 MB</p>
         <input type="file" id="fileInput" accept="image/*" hidden>
+        <input type="file" id="batchInput" accept="image/*" multiple hidden>
       </div>
       <div class="sample-head"><span>示例场景</span><span class="mono muted" id="sampleHint">点击载入</span></div>
       <div class="samples" id="samples"></div>
@@ -51,10 +52,10 @@
       <div class="field">
         <div class="field-row">
           <label for="threshold">置信度阈值</label>
-          <output class="mono" id="thresholdOut">0.40</output>
+          <output class="mono" id="thresholdOut">0.30</output>
         </div>
-        <input type="range" id="threshold" min="0.10" max="0.90" step="0.05" value="0.40">
-        <p class="hint">阈值越低召回越多、误报越多；调整后即时重算，无需重新推理。</p>
+        <input type="range" id="threshold" min="0.05" max="0.90" step="0.05" value="0.30">
+        <p class="hint">阈值越低召回越多、误报越多；调整后即时重算，无需重新推理。默认 0.30 由 9 张评测图扫参得出（F1 最高）。</p>
       </div>
 
       <div class="field">
@@ -67,7 +68,7 @@
         <select id="verdictMode">
           <option value="ground" selected>落地点落入警戒区（推荐）</option>
           <option value="center">目标中心点落入警戒区</option>
-          <option value="overlap">目标框重叠面积占比 ≥ 15%</option>
+          <option value="overlap">目标框落入区域的面积 ≥ 15%</option>
         </select>
         <p class="hint">落地点＝目标框底边中点，等价于判断"人站在哪里"，可避免远处目标的框误触。</p>
       </div>
@@ -91,6 +92,7 @@
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5 6.2 12 13 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
           立即分析
         </button>
+        <button class="btn btn-ghost" id="btnBatch" disabled>批量检测</button>
         <button class="btn btn-ghost" id="btnEditZone" disabled>编辑警戒区</button>
         <button class="btn btn-ghost" id="btnResetZone" disabled>重置区域</button>
       </div>
@@ -108,9 +110,21 @@
           <p class="empty-title">等待输入巡检画面</p>
           <p class="empty-desc">载入示例场景或拖入一张监控截图，系统将自动标出人员与车辆，并判定是否越过警戒区。</p>
           <p class="empty-mono mono">NO SIGNAL / 1280 × 720</p>
+          <button class="btn" id="btnRetry" hidden style="margin-top:14px">重新加载模型</button>
         </div>
       </div>
       <div class="scanline" id="scanline" hidden></div>
+      <div class="batch-panel" id="batchPanel" hidden>
+        <div class="batch-head">
+          <span class="batch-title">批量检测</span>
+          <span class="batch-summary mono" id="batchSummary">—</span>
+          <span class="batch-actions">
+            <button class="btn btn-ghost" id="btnBatchCsv">导出 CSV</button>
+            <button class="btn btn-ghost" id="btnBatchClose">关闭</button>
+          </span>
+        </div>
+        <div class="batch-body" id="batchBody"></div>
+      </div>
     </div>
 
     <div class="statusline">
@@ -135,8 +149,19 @@
       <div class="log" id="logList"><p class="log-empty">尚无报警。载入图像并执行分析后，越界目标将在此登记。</p></div>
     </section>
 
+    <section class="block block-hist">
+      <div class="block-head">
+        <span class="idx">06</span><h2>历史批次</h2>
+        <span class="head-actions">
+          <button class="mini" id="btnExportHistory">导出</button>
+          <button class="mini" id="btnClearHistory">清空</button>
+        </span>
+      </div>
+      <div class="history" id="historyList"></div>
+    </section>
+
     <section class="block block-sys">
-      <div class="block-head"><span class="idx">06</span><h2>系统状态</h2></div>
+      <div class="block-head"><span class="idx">07</span><h2>系统状态</h2></div>
       <ul class="syslist">
         <li><span>推理引擎</span><b id="sysEngine" class="mono">初始化…</b></li>
         <li><span>输入分辨率</span><b id="sysRes" class="mono">—</b></li>

@@ -26,9 +26,9 @@ export class Detector {
         delegate: 'CPU'
       },
       runningMode: 'IMAGE',
-      // 阈值放宽到 0.1，界面上的滑杆可在不重新推理的前提下做二次筛选
-      scoreThreshold: 0.1,
-      maxResults: 60
+      // 阈值放宽到 0.05，界面滑杆在 0.05–0.90 之间二次筛选时都不需要重新推理
+      scoreThreshold: 0.05,
+      maxResults: 100
     });
 
     onProgress('预热推理管线');

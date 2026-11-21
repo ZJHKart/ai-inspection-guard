@@ -1,0 +1,18 @@
+{
+  "name": "ai-inspection-guard",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "description": "智能巡检 · 区域入侵检测：浏览器端目标检测与虚拟警戒区判定",
+  "keywords": [
+    "object-detection",
+    "mediapipe",
+    "efficientdet",
+    "intrusion-detection"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test tests/zone.test.mjs",
+    "serve": "python -m http.server 8000"
+  }
+}
